@@ -100,17 +100,7 @@ int main(int argc, char **argv) {
   if( type == serial ) {
     local_array = generate_serial(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
     float *C = matrix_mult_serial(local_array);
-    printMatrix(C, n);
-    /*
-    int j;
-    for(i = 0; i < n; i++ ) {
-      for(j = 0; j < n; j++ ) {
-        printf("%d ", local_array[i * n + j]);
-      }
-      printf("\n");
-    }*/
     one_d_partitioning(&comm_new, C, local_rank, num_procs);
-    printMatrix(C, n);
     free(C);
   } else {
     local_array = generate_mesh(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
@@ -373,12 +363,10 @@ void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_pr
   end = MPI_Wtime();
   dt = end - start;
   comm_time += dt;
-  
-  printf("Starting row:%d ending row:%d\n", startingRow, endingRow);
+ 
   start = MPI_Wtime();
   for( k = startingRow;  k < endingRow; k++ ) {
     for( j = k + 1; j < n; j++ ) {
-      printf("%Lf\n", A[k * n + k]);
       A[k * n + j] = A[k * n + j] / A[k * n + k];
     }
     for( i = k + 1; i < n; i++ ) {
@@ -402,7 +390,7 @@ void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_pr
 
   determinant = 1.0f;
   if( !computerStats && local_rank == num_procs - 1) {
-    
+   
     for( i = 0; i < n; i++ ) {
       printf("%f " , A[i * n + i]);
       determinant = determinant * A[i * n + i];
