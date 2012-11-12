@@ -31,7 +31,6 @@
 
 #include <getopt.h>
 #include <math.h>
-#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,18 +67,18 @@ void process_row_and_column(float *A, float *left_row, float *top_row, int start
 void printMatrix(float *A, int nElem);
 
 int main(int argc, char **argv) {
+  
 	double t_start, t_end;
   int *ptr_gen_array, elem_per_node;
   float *local_array;  
   int i, num_procs, local_rank, name_len;
-  	
-	char proc_name[MPI_MAX_PROCESSOR_NAME];
   gen_time = 0.0; proc_time = 0.0; comm_time = 0.0; total_time = 0.0;
  
   // Parse the arguments
+ printf("YES\n"); 
   if( parse_arguments(argc, argv) ) return 1;
-  
-  t_start = MPI_Wtime();
+  /*
+  ///t_start = MPI_Wtime();
   if( type == serial ) {
     local_array = generate_serial(&elem_per_node);
     float *C = matrix_mult_serial(local_array);
@@ -87,7 +86,7 @@ int main(int argc, char **argv) {
     free(C);
   } 
   
-  t_end = MPI_Wtime();
+  ///t_end = MPI_Wtime();
   total_time = t_end - t_start;
 
   if( computerStats ) {
@@ -97,7 +96,7 @@ int main(int argc, char **argv) {
     printf("%d\tt\t%s\t%d\t%f\n", n, s_local_coords, num_procs, total_time);
   }
 
-  free(local_array);
+  free(local_array); */
 	return 0;
 }
 
@@ -116,11 +115,11 @@ int parse_arguments(int argc, char **argv) {
 	while( (c = getopt_long (argc, argv, "n:t:q:w:c", long_options, &option_index)) != -1 ) {
 		switch(c) {
       case 'q':
-        //printf("optarg:%s\n", optarg);
-        result = strtok(optarg, delims);
-        one_prob = atof(result);
-        result = strtok(NULL, delims);
-        minus_one_prob = atof(result);
+        printf("optarg:%s\n", optarg);
+        //result = strtok(optarg, delims);
+        //one_prob = atof(result);
+        //result = strtok(NULL, delims);
+        //minus_one_prob = atof(result);
         break;
       case 'w':
         break;
@@ -155,28 +154,6 @@ int parse_arguments(int argc, char **argv) {
 	return 0;
 }
 
-void create_2dmesh_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs) {
-  int *dims, i, *periods, nodes_per_dim;
-  
-  MPI_Comm_size(MPI_COMM_WORLD, num_procs);
-	MPI_Comm_rank(MPI_COMM_WORLD, local_rank);
- 
-  int dimension = 2;
-  nodes_per_dim = (int) sqrt( (double) *num_procs );
-  local_coords = (int *) malloc(sizeof(int) * dimension);
-  dims = (int *) malloc(sizeof(int) * dimension);
-  periods = (int *) malloc(sizeof(int) * dimension);
-  for( i = 0; i < dimension; i++ ) {
-    dims[i] = nodes_per_dim;
-    periods[i] = 0;
-  }
-
-  MPI_Cart_create(MPI_COMM_WORLD, dimension, dims, periods, 0, comm_new);
-	MPI_Comm_size(*comm_new, num_procs);
-  MPI_Cart_coords(*comm_new, *local_rank, dimension, local_coords);
-  sprintf(s_local_coords, "[%d][%d]", local_coords[0], local_coords[1]);
-}
-
 float *generate_array(float one_prob, float minus_one_prob) {
 	unsigned int iseed = (unsigned int)time(NULL);
   int i,j; 
@@ -186,7 +163,7 @@ float *generate_array(float one_prob, float minus_one_prob) {
   srand (iseed);
 	gen_array = (float *)malloc(sizeof(float) * (n * n));
   
-  start = MPI_Wtime();
+  ///start = MPI_Wtime();
   float a = 0;
   int c = 0;
   int d = 0;
@@ -200,7 +177,7 @@ float *generate_array(float one_prob, float minus_one_prob) {
 		  gen_array[i * n + j] = a;
     }
   }
-  end = MPI_Wtime();
+  ///end = MPI_Wtime();
   dt = end - start;
   gen_time = dt;
   int c_n = n * n * one_prob;
@@ -241,12 +218,11 @@ float *block_mat_mult(float *A, int q) {
 }
 
 void one_d_partitioning(float *A) {
-  MPI_Status status;
   int k, i, j;
   long double determinant;
   double start, end, dt;
 
-  start = MPI_Wtime();
+  ///start = MPI_Wtime();
   for( k = 0;  k < n; k++ ) {
     for( j = k + 1; j < n; j++ ) {
       A[k * n + j] = A[k * n + j] / A[k * n + k];
@@ -258,11 +234,11 @@ void one_d_partitioning(float *A) {
       A[i * n + k] = 0;
     }
   }
-  end = MPI_Wtime();
+  ///end = MPI_Wtime();
   dt = end - start;
   proc_time += dt;
 
-  start = MPI_Wtime();
+  ///start = MPI_Wtime();
   
   determinant = 1.0f;
    
@@ -271,7 +247,7 @@ void one_d_partitioning(float *A) {
     determinant = determinant * A[i * n + i];
   }
   printf("\nDet is: %Lf\n", determinant);
-  end = MPI_Wtime();
+  ///end = MPI_Wtime();
   dt = end - start;
   proc_time += dt;
 }
