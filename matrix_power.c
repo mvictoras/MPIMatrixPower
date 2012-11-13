@@ -38,7 +38,7 @@
 #include <time.h>
 #include <unistd.h>
 
-int n, *local_coords;
+int n, k, *local_coords;
 float one_prob, minus_one_prob;
 char s_local_coords[255];
 int computerStats = 0;
@@ -64,8 +64,9 @@ void serial_deter();
 
 void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
 void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
-float *matrix_mult_serial(float *A);
-float *block_mat_mult(float *A, int q);
+float *matrix_power(float *A, int n, int k);
+void matrix_mult_serial(float *A, float *B, float *C, int n);
+void block_mat_mult(float *A, float *B, float *C, int q);
 
 void process_row_and_column(float *A, float *left_row, float *top_row, int startingRow, int k, int endingRow, int startingColumn, int endingColumn, int numRows, int numColumns, int local_k);
 
@@ -99,7 +100,7 @@ int main(int argc, char **argv) {
   t_start = MPI_Wtime();
   if( type == serial ) {
     local_array = generate_serial(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
-    float *C = matrix_mult_serial(local_array);
+    float *C = matrix_power(local_array, n, k);
     one_d_partitioning(&comm_new, C, local_rank, num_procs);
     free(C);
   } else {
@@ -141,7 +142,7 @@ int parse_arguments(int argc, char **argv) {
 
   char *result = NULL;
   char delims[] = "m";
-	while( (c = getopt_long (argc, argv, "n:t:q:w:c", long_options, &option_index)) != -1 ) {
+	while( (c = getopt_long (argc, argv, "n:t:q:w:k:c", long_options, &option_index)) != -1 ) {
 		switch(c) {
       case 'q':
         //printf("optarg:%s\n", optarg);
@@ -155,6 +156,9 @@ int parse_arguments(int argc, char **argv) {
 			case 'n':
 				n = atoi(optarg);
 				break;
+      case 'k':
+        k = atoi(optarg);
+        break;
       case 'c':
         computerStats = 1;
         break;
@@ -327,14 +331,28 @@ float *generate_mesh(MPI_Comm *comm_new, int local_rank, int num_procs,
   return local_array;
 }
 
-float *matrix_mult_serial(float *A) {
-  return block_mat_mult(A, n);
+float *matrix_power(float *A, int n, int k) {
+  int i;
+  float *C, *tmp_res;
+  tmp_res = (float*)malloc(sizeof(float) * n * n);
+  C = (float*)malloc(sizeof(float) * n * n);
+  memcpy(C, A, n * n);
+
+  for( i = 0; i < k - 1; i++ ) {
+    matrix_mult_serial(C, A, tmp_res, n);
+    memcpy(C, tmp_res, n * n);
+  }
+
+  free(tmp_res);
+  return C;
 }
 
-float *block_mat_mult(float *A, int q) {
+void matrix_mult_serial(float *A, float *B, float *C, int n) {
+  block_mat_mult(A, B, C, n);
+}
+
+void block_mat_mult(float *A, float *B, float *C, int q) {
   int i, j, k;
-  float *C;
-  C = (float*)malloc(sizeof(float) * q * q);
   for( i = 0; i < q; i++ ) {
     for( j = 0; j < q; j++ ) { 
       bzero(C + i * q, q);
@@ -343,7 +361,6 @@ float *block_mat_mult(float *A, int q) {
       }
     }
   }
-  return C;
 }
 
 void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs) {
