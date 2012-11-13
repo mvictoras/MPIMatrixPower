@@ -141,7 +141,7 @@ int parse_arguments(int argc, char **argv) {
   };
 
   char *result = NULL;
-  char delims[] = ",";
+  char delims[] = "m";
 	while( (c = getopt_long (argc, argv, "n:t:q:w:k:c", long_options, &option_index)) != -1 ) {
 		switch(c) {
       case 'q':
