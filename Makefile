@@ -1,12 +1,9 @@
-CC=mpicc
+MPICC=mpicc
 
-all: matrix_power matrix_power_serial
+all: matrix_power matrix_power
 
 matrix_power: matrix_power.c
-			$(CC) -lm -o matrix_power matrix_power.c
-
-matrix_power_serial: matrix_power_serial.c
-			$(CC) -lm -o matrix_power_serial matrix_power_serial.c
+			$(MPICC) -lm -o matrix_power matrix_power.c
 
 clean:
-	    rm -rf matrix_power matrix_power_serial
+	    rm -rf matrix_power
