@@ -317,7 +317,7 @@ float *generate_array(int num_procs, char *proc_name, int local_rank,
   float a = 0;
   int c = 0;
   int d = 0;
-  int k = 0;
+  //int k = 0;
 	for( i = 0; i < n; i++ ) {
     for( j = 0; j < n; j++ ) {
       double number = (double)rand() / RAND_MAX;
@@ -325,8 +325,8 @@ float *generate_array(int num_procs, char *proc_name, int local_rank,
       if( number <= one_prob ) { a = 1; c++; }
       else if( number - one_prob <= minus_one_prob ) { a = -1; d++; }
       else a = 0;
-      a = k;
-      k++;
+      //a = k;
+      //k++;
 		  gen_array[i * n + j] = a;
     }
   }
