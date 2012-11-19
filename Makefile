@@ -1,6 +1,6 @@
 MPICC=mpicc
 
-all: matrix_power
+all: matrix_power matrix_power
 
 matrix_power: matrix_power.c
 			$(MPICC) -lm -o matrix_power matrix_power.c
