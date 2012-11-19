@@ -45,6 +45,7 @@ int computerStats = 0;
 int *counts;
 int *displs;
 MPI_Datatype resizedtype;
+MPI_Comm comm_hor, comm_vert;
 
 // Timing
 double gen_time, proc_time, comm_time, total_time;
@@ -52,7 +53,8 @@ int hasReceivedAkk = -1;
 typedef enum { 
   serial,
   strassen,
-  cannon 
+  cannon,
+  dns
 } TYPE;
 TYPE type;
 
@@ -60,9 +62,11 @@ int parse_arguments(int argc, char **argv);
 float *generate_array(int num_procs, char *proc_name, int local_rank, float one_prob, float minus_one_prob);
 void create_2dmesh_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs);
 void create_ring_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs);
+void create_hypercube_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs);
 
 float *generate_serial(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
 float *generate_parallel(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
+float *distribute_hypercube(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
 
 void serial_deter();
 
@@ -72,6 +76,8 @@ void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_pr
 
 float *do_cannon(MPI_Comm *comm_new, float *A, float *B, int local_rank, int num_procs);
 void do_strassen(float *A, float *B, float *C, int _n); 
+void do_dns(MPI_Comm *comm_new, float *A, float *B, float *C, int local_rank, int num_procs);
+
 
 void add(float *A, float *B, float *C, int _n);  
 void sub(float *A, float *B, float *C, int _n);
@@ -108,6 +114,8 @@ int main(int argc, char **argv) {
     create_ring_topology(&comm_new, &local_rank, &num_procs);
   } else if( type == cannon ) {
     create_2dmesh_topology(&comm_new, &local_rank, &num_procs);
+  } else if( type == dns ) {
+    create_hypercube_topology(&comm_new, &local_rank, &num_procs);
   }
 
   t_start = MPI_Wtime();
@@ -179,6 +187,8 @@ int main(int argc, char **argv) {
 
     free(B);
     free(C);
+  } else if( type == dns ) {
+    ////local_array = distribute_hypercube(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
   }
 
   /*
@@ -201,6 +211,12 @@ int main(int argc, char **argv) {
   free(local_array);
 	free(counts);
   free(displs);
+  
+  if( type == dns ) {
+    //MPI_Comm_free(&comm_hor);
+    //MPI_Comm_free(&comm_vert);
+  }
+
   //MPI_Comm_free(&comm_new);
 	MPI_Finalize(); // Exit MPI
 	return 0;
@@ -242,8 +258,9 @@ int parse_arguments(int argc, char **argv) {
         if( strcmp(optarg, "serial" ) == 0 ) type = serial;
         else if( strcmp(optarg, "cannon" ) == 0 ) type = cannon;
         else if( strcmp(optarg, "strassen" ) == 0 ) type = strassen;
+        else if( strcmp(optarg, "dns" ) == 0 ) type = dns;
         else {
-          fprintf( stderr, "Option -%c %s in incorrect. Allowed values are: serial, strassen, cannon\n", optopt, optarg);
+          fprintf( stderr, "Option -%c %s in incorrect. Allowed values are: serial, strassen, cannon, dns\n", optopt, optarg);
           return 1;
         }
         break;
@@ -301,6 +318,44 @@ void create_2dmesh_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs)
 	MPI_Comm_size(*comm_new, num_procs);
   MPI_Cart_coords(*comm_new, *local_rank, dimension, local_coords);
   sprintf(s_local_coords, "[%d][%d]", local_coords[0], local_coords[1]);
+}
+
+void create_hypercube_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs) {
+  int dims[3], i, periods[3];
+  int keep_dims[3];
+  MPI_Comm_size(MPI_COMM_WORLD, num_procs);
+	MPI_Comm_rank(MPI_COMM_WORLD, local_rank);
+  
+  //int dimension = (int) (log(*num_procs) / log(2));
+  int dimension = 3;
+  local_coords = (int *) malloc(sizeof(int) * dimension);
+  for( i = 0; i < dimension; i++ ) {
+    dims[i] = (int) cbrt(*num_procs);
+    periods[i] = 1;
+  }
+
+  MPI_Cart_create(MPI_COMM_WORLD, dimension, dims, periods, 0, comm_new);
+	MPI_Comm_size(*comm_new, num_procs);
+  MPI_Cart_coords(*comm_new, *local_rank, dimension, local_coords);
+  s_local_coords[0] = '\0';
+  for( i = 0; i < dimension; i++ ) {
+    char number[10];
+    sprintf(number, "[%d]", local_coords[i]);
+    strcat(s_local_coords, number);
+  }
+
+  keep_dims[0] = 1; // i
+  keep_dims[1] = 1; // j
+  keep_dims[2] = 0; // k
+  printf("%s: Bang!\n", s_local_coords);
+  // Create a 2-D sub-topology for each of the k-ith dimension
+  MPI_Cart_sub(*comm_new, keep_dims, &comm_hor);
+  printf("%s: Big Bang!\n", s_local_coords);
+
+  //keep_dims[0] = 1;
+  //keep_dims[1] = 0;
+  //keep_dims[2] = 1;
+  //MPI_Cart_sub(*comm_new, keep_dims, &comm_vert);
 }
 
 float *generate_array(int num_procs, char *proc_name, int local_rank, 
@@ -416,6 +471,66 @@ float *generate_parallel(MPI_Comm *comm_new, int local_rank, int num_procs,
 
   return local_array;
 }
+
+float *distribute_hypercube(MPI_Comm *comm_new, int local_rank, int num_procs, 
+                 char *proc_name, int *elem_per_node) {
+  
+  float *local_array;
+  float *tmp_array;
+  double start, end, dt;
+  int i, j;
+  int sq_num_procs = sqrt(num_procs);
+  n_local = n / sq_num_procs;
+  MPI_Status status;
+
+  local_array = (float *) malloc(sizeof(float) * n_local * n_local);
+  counts = (int *)malloc(sizeof(int) * num_procs);
+  displs = (int *)malloc(sizeof(int) * num_procs);
+  
+  if( local_rank == 0 ) {
+    printf("Generating array\n");
+    tmp_array = generate_array(num_procs, proc_name, local_rank, one_prob, minus_one_prob);
+    //printMatrix(tmp_array, n);
+  }
+  for( i = 0; i <num_procs; i++ ) {
+    counts[i] = 1;
+  }
+  
+  for( i = 0; i < sq_num_procs; i++ ) {
+    for(j = 0; j < sq_num_procs; j++ ) {
+      displs[i * sq_num_procs + j] = j + i * n; 
+    }
+  }
+
+  MPI_Datatype type;
+  int sizes[2]    = {n,n};  // size of global array 
+  int subsizes[2] = {n_local,n_local};  // size of sub-region
+  int starts[2]   = {0,0}; 
+  
+  // as before
+  MPI_Type_create_subarray(2, sizes, subsizes, starts, MPI_ORDER_C, MPI_FLOAT, &type);  
+  // change the extent of the type
+  MPI_Type_create_resized(type, 0, n_local * sizeof(float), &resizedtype);
+  MPI_Type_commit(&resizedtype);
+ 
+  //if( local_coords[2] == 0 )
+    //MPI_Scatterv(tmp_array, counts, displs, resizedtype, local_array, n_local * n_local, MPI_FLOAT, 0, comm_hor); 
+
+  //printf("(%s(%d/%d)%s: %d\n", proc_name, local_rank, num_procs, s_local_coords, displs[local_rank]);
+  //printMatrix(local_array, n_local);
+  
+  //MPI_Type_free(&resizedtype);
+  MPI_Type_free(&type);
+
+  if( local_rank == 0 ) {
+    free(tmp_array);
+  }
+  if( !computerStats )
+    printf("(%s(%d/%d)%s: It took %1.8fs to receive the sub-array\n", proc_name, local_rank, num_procs, s_local_coords, dt);
+
+  return local_array;
+}
+
 
 void matrix_power(float *A, float *C, int _n, int _k) {
   int i;
@@ -933,6 +1048,9 @@ float *do_cannon(MPI_Comm *comm_new, float *A, float *B, int local_rank, int num
   //}
 
   return C;
+}
+
+void  do_dns(MPI_Comm *comm_new, float *A, float *B, float *C, int local_rank, int num_procs) {
 }
 
 void process_row_and_column(float *A, float *left_row, float *top_row, int k,
