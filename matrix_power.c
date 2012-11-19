@@ -38,17 +38,21 @@
 #include <time.h>
 #include <unistd.h>
 
-int n, k, *local_coords;
+int n, k, *local_coords, n_local;
 float one_prob, minus_one_prob;
 char s_local_coords[255];
 int computerStats = 0;
+int *counts;
+int *displs;
+MPI_Datatype resizedtype;
 
 // Timing
 double gen_time, proc_time, comm_time, total_time;
 int hasReceivedAkk = -1;
 typedef enum { 
-  serial, 
-  mesh
+  serial,
+  strassen,
+  cannon 
 } TYPE;
 TYPE type;
 
@@ -58,13 +62,21 @@ void create_2dmesh_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs)
 void create_ring_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs);
 
 float *generate_serial(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
-float *generate_mesh(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
+float *generate_parallel(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
 
 void serial_deter();
 
+void determinant(float *A, int _n);
 void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
 void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
-float *matrix_power(float *A, int n, int k);
+
+float *do_cannon(MPI_Comm *comm_new, float *A, float *B, int local_rank, int num_procs);
+void do_strassen(float *A, float *B, float *C, int _n); 
+
+void add(float *A, float *B, float *C, int _n);  
+void sub(float *A, float *B, float *C, int _n);
+
+void matrix_power(float *A, float *C, int _n, int _k);
 void matrix_mult_serial(float *A, float *B, float *C, int n);
 void block_mat_mult(float *A, float *B, float *C, int q);
 
@@ -77,9 +89,10 @@ void receive_from_left(MPI_Comm *comm, int direction, float *A, int size, int ro
 int main(int argc, char **argv) {
 	double t_start, t_end;
   int *ptr_gen_array, elem_per_node;
-  float *local_array;  
+  float *C, *local_array;  
   int i, num_procs, local_rank, name_len;
-  	
+  double start, end, dt;
+
 	char proc_name[MPI_MAX_PROCESSOR_NAME];
 	MPI_Comm comm_new;
   gen_time = 0.0; proc_time = 0.0; comm_time = 0.0; total_time = 0.0;
@@ -91,20 +104,81 @@ int main(int argc, char **argv) {
 	MPI_Get_processor_name(proc_name, &name_len);
   
   // Initially create the topology
-  if( type == serial ) {
+  if( type == serial || type == strassen ) {
     create_ring_topology(&comm_new, &local_rank, &num_procs);
-  } else {
+  } else if( type == cannon ) {
     create_2dmesh_topology(&comm_new, &local_rank, &num_procs);
   }
 
   t_start = MPI_Wtime();
   if( type == serial ) {
     local_array = generate_serial(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
-    float *C = matrix_power(local_array, n, k);
-    one_d_partitioning(&comm_new, C, local_rank, num_procs);
+    //printMatrix(local_array, n);
+    C = (float*) malloc(sizeof(float) * n * n);
+    //bzero(C, sizeof(float) * n * n);
+    start = MPI_Wtime();
+    matrix_power(local_array, C, n, k);
+    end = MPI_Wtime();
+    dt = end - start;
+    proc_time += dt;
+
+
+    //printf("======\n");
+    //printMatrix(C, n);
+    start = MPI_Wtime();
+    determinant(C, n);
+    end = MPI_Wtime();
+    dt = end - start;
+    proc_time += dt;
+
+
     free(C);
-  } else {
-    local_array = generate_mesh(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
+  } else if( type == cannon ) {
+    local_array = generate_parallel(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
+    float *B, *C, *result;
+    B = (float *)malloc(sizeof(float) * n_local * n_local);
+    result = (float *)malloc(sizeof(float) * n * n);
+    memcpy(B, local_array, sizeof(float) * n_local * n_local);
+    
+    for( i = 0; i < k - 1; ++i) {
+      C = do_cannon(&comm_new, local_array, B, local_rank, num_procs);
+      memcpy(local_array, C, sizeof(float) * n_local * n_local);
+    }
+
+    MPI_Gatherv(C, n_local * n_local, MPI_FLOAT, result, counts, displs, resizedtype, 0, comm_new); 
+   
+    if( local_rank == 0 ) {
+      determinant(result, n);
+    }
+    free(C);
+    free(B);
+    free(result);
+    MPI_Type_free(&resizedtype);
+  
+  } else if( type == strassen ) {
+    float *B;
+    local_array = generate_serial(&comm_new, local_rank, num_procs, proc_name, &elem_per_node);
+    C = (float*)malloc(sizeof(float) * n * n);
+    B = (float*)malloc(sizeof(float) * n * n);
+    memcpy(B, local_array, sizeof(float) * n * n);
+
+    for( i = 0; i < k - 1; ++i ) {
+      do_strassen(local_array, B, C, n);
+      memcpy(local_array, C, sizeof(float) * n * n);
+    }
+
+    //printMatrix(B, n);
+    //printMatrix(C, n);
+    
+    start = MPI_Wtime();
+    determinant(C, n);
+    end = MPI_Wtime();
+    dt = end - start;
+    proc_time += dt;
+
+
+    free(B);
+    free(C);
   }
 
   /*
@@ -125,7 +199,9 @@ int main(int argc, char **argv) {
   }
 
   free(local_array);
-	//MPI_Comm_free(&comm_new);
+	free(counts);
+  free(displs);
+  //MPI_Comm_free(&comm_new);
 	MPI_Finalize(); // Exit MPI
 	return 0;
 }
@@ -164,9 +240,10 @@ int parse_arguments(int argc, char **argv) {
         break;
       case 't':
         if( strcmp(optarg, "serial" ) == 0 ) type = serial;
-        else if( strcmp(optarg, "mesh" ) == 0 ) type = mesh;
+        else if( strcmp(optarg, "cannon" ) == 0 ) type = cannon;
+        else if( strcmp(optarg, "strassen" ) == 0 ) type = strassen;
         else {
-          fprintf( stderr, "Option -%c %s in incorrect. Allowed values are: serial, mesh\n", optopt, optarg);
+          fprintf( stderr, "Option -%c %s in incorrect. Allowed values are: serial, strassen, cannon\n", optopt, optarg);
           return 1;
         }
         break;
@@ -217,7 +294,7 @@ void create_2dmesh_topology(MPI_Comm *comm_new, int *local_rank, int *num_procs)
   periods = (int *) malloc(sizeof(int) * dimension);
   for( i = 0; i < dimension; i++ ) {
     dims[i] = nodes_per_dim;
-    periods[i] = 0;
+    periods[i] = 1;
   }
 
   MPI_Cart_create(MPI_COMM_WORLD, dimension, dims, periods, 0, comm_new);
@@ -240,6 +317,7 @@ float *generate_array(int num_procs, char *proc_name, int local_rank,
   float a = 0;
   int c = 0;
   int d = 0;
+  int k = 0;
 	for( i = 0; i < n; i++ ) {
     for( j = 0; j < n; j++ ) {
       double number = (double)rand() / RAND_MAX;
@@ -247,6 +325,8 @@ float *generate_array(int num_procs, char *proc_name, int local_rank,
       if( number <= one_prob ) { a = 1; c++; }
       else if( number - one_prob <= minus_one_prob ) { a = -1; d++; }
       else a = 0;
+      a = k;
+      k++;
 		  gen_array[i * n + j] = a;
     }
   }
@@ -256,6 +336,7 @@ float *generate_array(int num_procs, char *proc_name, int local_rank,
   int c_n = n * n * one_prob;
   int d_n = n * n * minus_one_prob;
 
+  //printMatrix(gen_array, n);
   if( !computerStats )
     printf("(%s(%d/%d)%s: %d random numbers generated in %1.8fs one:%d/%d minus one:%d/%d\n", proc_name, local_rank, num_procs, s_local_coords, n * n, dt, c, c_n, d, d_n);
   
@@ -280,88 +361,119 @@ float *generate_serial(MPI_Comm *comm_new, int local_rank, int num_procs,
 }
 
 
-float *generate_mesh(MPI_Comm *comm_new, int local_rank, int num_procs, 
+float *generate_parallel(MPI_Comm *comm_new, int local_rank, int num_procs, 
                  char *proc_name, int *elem_per_node) {
   float *local_array;
   float *tmp_array;
   double start, end, dt;
   int i, j;
-  int nProc = n / sqrt(num_procs);
+  int sq_num_procs = sqrt(num_procs);
+  n_local = n / sq_num_procs;
   MPI_Status status;
 
-  local_array = (float *) malloc(sizeof(float) * nProc * nProc);
+  local_array = (float *) malloc(sizeof(float) * n_local * n_local);
+  counts = (int *)malloc(sizeof(int) * num_procs);
+  displs = (int *)malloc(sizeof(int) * num_procs);
+  
   if( local_rank == 0 ) {
     tmp_array = generate_array(num_procs, proc_name, local_rank, one_prob, minus_one_prob);
+    //printMatrix(tmp_array, n);
   }
-    /*
-    int i, j, k, l;
-    for( i = 0; i < sqrt(num_procs); i++ ) {
-      for( j = 0; j < sqrt(num_procs); j++ ) {
-        if( i == 0 && j == 0 ) {
-          int index = 0;
-          for( k = 0; k < nProc; k++ ) {
-            for( l = 0; l < nProc; l++ ) {
-              local_array[index++] = tmp_array[k * n + l];
-            }
-          }
-        }
-        else {
-          float *buff_to_send = (float*)malloc(sizeof(float) * nProc * nProc);
-          int startingRow = i * nProc;
-          int startingColumn = j * nProc;
-          int index = 0;
-          for( k = startingRow; k < startingRow + nProc; k++ ) {
-            for( l = startingColumn; l < startingColumn + nProc; l++ ) {
-              buff_to_send[index++] = tmp_array[k * n + l];
-            }
-          }
-          MPI_Send(buff_to_send, nProc * nProc, MPI_FLOAT, j * sqrt(num_procs) + i, 0, *comm_new);
-          free (buff_to_send);
-        }
-      }
+  for( i = 0; i <num_procs; i++ ) {
+    counts[i] = 1;
+  }
+  
+  for( i = 0; i < sq_num_procs; i++ ) {
+    for(j = 0; j < sq_num_procs; j++ ) {
+      displs[i * sq_num_procs + j] = j + i * n; 
     }
-    free(tmp_array);
-  } else {
-    MPI_Recv(local_array, nProc * nProc, MPI_FLOAT, 0, 0, *comm_new, &status);
   }
-*/
+
+  MPI_Datatype type;
+  int sizes[2]    = {n,n};  /* size of global array */
+  int subsizes[2] = {n_local,n_local};  /* size of sub-region */
+  int starts[2]   = {0,0}; 
+  
+  /* as before */
+  MPI_Type_create_subarray(2, sizes, subsizes, starts, MPI_ORDER_C, MPI_FLOAT, &type);  
+  /* change the extent of the type */
+  MPI_Type_create_resized(type, 0, n_local * sizeof(float), &resizedtype);
+  MPI_Type_commit(&resizedtype);
+  
+  MPI_Scatterv(tmp_array, counts, displs, resizedtype, local_array, n_local * n_local, MPI_FLOAT, 0, *comm_new); 
+
+  //printf("(%s(%d/%d)%s: %d\n", proc_name, local_rank, num_procs, s_local_coords, displs[local_rank]);
+  //printMatrix(local_array, n_local);
+  
+  //MPI_Type_free(&resizedtype);
+  MPI_Type_free(&type);
+
+  if( local_rank == 0 ) {
+    free(tmp_array);
+  }
   if( !computerStats )
     printf("(%s(%d/%d)%s: It took %1.8fs to receive the sub-array\n", proc_name, local_rank, num_procs, s_local_coords, dt);
 
   return local_array;
 }
 
-float *matrix_power(float *A, int n, int k) {
+void matrix_power(float *A, float *C, int _n, int _k) {
   int i;
-  float *C, *tmp_res;
-  tmp_res = (float*)malloc(sizeof(float) * n * n);
-  C = (float*)malloc(sizeof(float) * n * n);
-  memcpy(C, A, n * n);
+  float *tmp_res;
+  tmp_res = (float*)malloc(sizeof(float) * _n * _n);
+  memcpy(C, A, sizeof(float) * _n * _n);
 
-  for( i = 0; i < k - 1; i++ ) {
-    matrix_mult_serial(C, A, tmp_res, n);
-    memcpy(C, tmp_res, n * n);
+  for( i = 0; i < _k - 1; i++ ) {
+    matrix_mult_serial(C, A, tmp_res, _n);
+    memcpy(C, tmp_res, sizeof(float) * _n * _n);
   }
 
   free(tmp_res);
-  return C;
 }
 
-void matrix_mult_serial(float *A, float *B, float *C, int n) {
-  block_mat_mult(A, B, C, n);
+void matrix_mult_serial(float *A, float *B, float *C, int _n) {
+  bzero(C, sizeof(float) * _n * _n);
+  block_mat_mult(A, B, C, _n);
 }
 
-void block_mat_mult(float *A, float *B, float *C, int q) {
+void block_mat_mult(float *A, float *B, float *C, int _q) {
   int i, j, k;
-  for( i = 0; i < q; i++ ) {
-    for( j = 0; j < q; j++ ) { 
-      bzero(C + i * q, q);
-      for( k = 0; k < q; k++ ) {
-        C[i * q + j] = C[i * q + j] + A[i * q + k] * A[k * q + j];
+  //bzero(C, sizeof(float) * _q * _q);
+  for( i = 0; i < _q; i++ ) {
+    for( j = 0; j < _q; j++ ) { 
+      for( k = 0; k < _q; k++ ) {
+        C[i * _q + j] += A[i * _q + k] * B[k * _q + j];
       }
     }
   }
 }
+
+void determinant(float *A, int _n) {
+  int k, i, j;
+  long double determinant;
+  double start, end, dt;
+
+
+  for( k = 0;  k < _n; k++ ) {
+    for( j = k + 1; j < _n; j++ ) {
+      A[k * _n + j] = A[k * _n + j] / A[k * _n + k];
+    }
+    for( i = k + 1; i < _n; i++ ) {
+      for( j = k + 1; j < _n; j++ ) {
+        A[i * _n + j] -= A[i * _n + k] * A[k * _n + j];
+      }
+      A[i * _n + k] = 0;
+    }
+  }
+  
+  determinant = 1.0f;
+  for( i = 0; i < n; i++ ) {
+    //printf("%f " , A[i * n + i]);
+    determinant = determinant * A[i * n + i];
+  }
+  //printf("\nDet is: %Lf\n", determinant);
+}
+
 
 void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs) {
   MPI_Status status;
@@ -409,10 +521,10 @@ void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_pr
   if( !computerStats && local_rank == num_procs - 1) {
    
     for( i = 0; i < n; i++ ) {
-      printf("%f " , A[i * n + i]);
+      //printf("%f " , A[i * n + i]);
       determinant = determinant * A[i * n + i];
     }
-    printf("\nDet is: %Lf\n", determinant);
+    //printf("\nDet is: %Lf\n", determinant);
   }
   end = MPI_Wtime();
   dt = end - start;
@@ -471,7 +583,7 @@ void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_pr
     end = MPI_Wtime();
     dt = end - start;
     proc_time += dt;
-
+printf("%d: ASDAASD\n", local_rank);
     // Now calculate the box
     int m, bOutside = 1; 
     float top_row[numRows]; 
@@ -607,6 +719,222 @@ void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_pr
   }
 }
 
+void do_strassen(float *A, float *B, float *C, int _n) {
+  int i, j;
+
+  int half_n = _n / 2;
+  float *a11, *a12, *a21, *a22, *b11, *b12, *b21, *b22;
+  float *c11, *c12, *c21, *c22;
+  float *aRes, *bRes;
+  float *m1, *m2, *m3, *m4, *m5, *m6, *m7;
+
+  if( _n == 1 ) {
+    C[0] = A[0] * B[0];
+    return;
+  }
+
+  // Allocate the memories
+  a11 = (float *)malloc(sizeof(float) * half_n * half_n);
+  a12 = (float *)malloc(sizeof(float) * half_n * half_n);
+  a21 = (float *)malloc(sizeof(float) * half_n * half_n);
+  a22 = (float *)malloc(sizeof(float) * half_n * half_n);
+
+  b11 = (float *)malloc(sizeof(float) * half_n * half_n);
+  b12 = (float *)malloc(sizeof(float) * half_n * half_n);
+  b21 = (float *)malloc(sizeof(float) * half_n * half_n);
+  b22 = (float *)malloc(sizeof(float) * half_n * half_n);
+
+  aRes = (float *)malloc(sizeof(float) * half_n * half_n);
+  bRes = (float *)malloc(sizeof(float) * half_n * half_n);
+
+  m1 = (float *)malloc(sizeof(float) * half_n * half_n);
+  m2 = (float *)malloc(sizeof(float) * half_n * half_n);
+  m3 = (float *)malloc(sizeof(float) * half_n * half_n);
+  m4 = (float *)malloc(sizeof(float) * half_n * half_n);
+  m5 = (float *)malloc(sizeof(float) * half_n * half_n);
+  m6 = (float *)malloc(sizeof(float) * half_n * half_n);
+  m7 = (float *)malloc(sizeof(float) * half_n * half_n);
+
+  for( i = 0; i < half_n; i++ ) {
+    for( j = 0; j < half_n; j++ ) {
+      a11[i * half_n + j] = A[i * _n + j];
+      a12[i * half_n + j] = A[i * _n + j + half_n];
+      a21[i * half_n + j] = A[(i + half_n) * _n + j];
+      a22[i * half_n + j] = A[(i + half_n) * _n + j + half_n];
+      
+      b11[i * half_n + j] = B[i * _n + j];
+      b12[i * half_n + j] = B[i * _n + j + half_n];
+      b21[i * half_n + j] = B[(i + half_n) * _n + j];
+      b22[i * half_n + j] = B[(i + half_n) * _n + j + half_n];
+    }
+  }
+
+  add(a11, a22, aRes, half_n); 
+  add(b11, b22, bRes, half_n);
+  do_strassen(aRes, bRes, m1, half_n); // m1 = (a11+a22) * (b11+b22)
+                   
+  add(a21, a22, aRes, half_n); 
+  do_strassen(aRes, b11, m2, half_n); // m2 = (a21+a22) * (b11)
+                             
+  sub(b12, b22, bRes, half_n);
+  do_strassen(a11, bRes, m3, half_n); // m3 = (a11) * (b12 - b22)
+                                                   
+  sub(b21, b11, bRes, half_n);
+  do_strassen(a22, bRes, m4, half_n); // m4 = (a22) * (b21 - b11)
+                                                                 
+  add(a11, a12, aRes, half_n);
+  do_strassen(aRes, b22, m5, half_n); // m5 = (a11+a12) * (b22)   
+                                                                                  
+  sub(a21, a11, aRes, half_n);
+  add(b11, b12, bRes, half_n); 
+  do_strassen(aRes, bRes, m6, half_n); // m6 = (a21-a11) * (b11+b12)
+                                                         
+  sub(a12, a22, aRes, half_n);
+  add(b21, b22, bRes, half_n);
+  do_strassen(aRes, bRes, m7, half_n); // m7 = (a12-a22) * (b21+b22)
+
+  free(a11);
+  free(a12);
+  free(a21);
+  free(a22);
+
+  free(b11);
+  free(b12);
+  free(b21);
+  free(b22);
+
+  c11 = (float *)malloc(sizeof(float) * half_n * half_n);
+  c12 = (float *)malloc(sizeof(float) * half_n * half_n);
+  c21 = (float *)malloc(sizeof(float) * half_n * half_n);
+  c22 = (float *)malloc(sizeof(float) * half_n * half_n);
+
+  // Calculating C matrices
+  add(m3, m5, c12, half_n); // c12 = p3 + p5
+  add(m2, m4, c21, half_n); // c21 = p2 + p4
+  
+  add(m1, m4, aRes, half_n); // p1 + p4
+  add(aRes, m7, bRes, half_n); // p1 + p4 + p7
+  sub(bRes, m5, c11, half_n); // c11 = p1 + p4 - p5 + p7
+                                   
+  add(m1, m3, aRes, half_n); // p1 + p3
+  add(aRes, m6, bRes, half_n); // p1 + p3 + p6
+  sub(bRes, m2, c22, half_n); // c22 = p1 + p3 - p2 + p6
+  
+  for( i = 0; i < half_n; ++i ) {
+    for( j = 0 ; j < half_n; ++j ) {
+      C[i * _n + j]                     = c11[i * half_n + j];
+      C[i * _n + j + half_n]            = c12[i * half_n + j];
+      C[(i + half_n) * _n + j]          = c21[i * half_n + j];
+      C[(i + half_n) * _n + j + half_n] = c22[i * half_n + j];
+    }
+  }
+
+  free(c11);
+  free(c12);
+  free(c21);
+  free(c22);
+
+  free(aRes);
+  free(bRes);
+
+  free(m1);
+  free(m2);
+  free(m3);
+  free(m4);
+  free(m5);
+  free(m6);
+  free(m7);
+}
+
+float *do_cannon(MPI_Comm *comm_new, float *A, float *B, int local_rank, int num_procs) {
+  float *C;
+  int i;
+  MPI_Status status;
+  int left_rank, right_rank, up_rank, down_rank;
+  int distance = 1;
+  double start, end, dt;
+
+  //for( i = 0; i < num_procs; ++i ) {
+  //  MPI_Barrier( *comm_new );
+  //  if ( i == local_rank ) {
+      //printf("B:%d:\n", local_rank);
+      //printMatrix(A, n);
+  //  }
+ // }
+ 
+  C = (float *) malloc(sizeof(float) * n_local * n_local);
+  bzero(C, sizeof(float) * n_local * n_local);
+  //printMatrix(A, n);
+  // Initial alignement
+  MPI_Cart_shift(*comm_new, 1, distance, &left_rank, &right_rank);
+  MPI_Cart_shift(*comm_new, 0, distance, &up_rank, &down_rank);
+ 
+  start = MPI_Wtime();
+  for( i = 0; i < local_coords[0]; i++ ) {
+    MPI_Sendrecv_replace(A, n_local * n_local, MPI_FLOAT, left_rank, 0, right_rank, 0, *comm_new, &status);
+  }
+  
+  for( i = 0; i < local_coords[1]; i++ ) {
+    MPI_Sendrecv_replace(B, n_local * n_local, MPI_FLOAT, up_rank, 0, down_rank, 0, *comm_new, &status);
+  }
+  end = MPI_Wtime();
+  dt = end - start;
+  comm_time += dt;
+
+  
+  start = MPI_Wtime();
+  block_mat_mult(A, B, C, n_local);
+  end = MPI_Wtime();
+  dt = end - start;
+  proc_time += dt;
+
+
+  /*for( i = 0; i < num_procs; ++i ) {
+    MPI_Barrier( *comm_new );
+    if ( i == 0 && local_rank == 0 ) {
+      printf("A:%d:\n", local_rank);
+      printMatrix(A, n_local);
+      printMatrix(B, n_local);
+      printMatrix(C, n_local);
+    }
+  }*/
+  for( i = 0; i < sqrt(num_procs) - 1; ++i ) {
+    //matrix_power(A, C, n_local, k);
+    //MPI_Cart_shift(*comm_new, 1, distance, &left_rank, &right_rank);
+    start = MPI_Wtime();
+    MPI_Sendrecv_replace(A, n_local * n_local, MPI_FLOAT, left_rank, 0, right_rank, 0, *comm_new, &status);
+    
+    //MPI_Cart_shift(*comm_new, 0, distance, &up_rank, &down_rank);
+    MPI_Sendrecv_replace(B, n_local * n_local, MPI_FLOAT, up_rank, 0, down_rank, 0, *comm_new, &status);
+    end = MPI_Wtime();
+    dt = end - start;
+    comm_time += dt;
+
+//printf("rank:%d A:%f B:%f\n", local_rank, A[0], B[0]);
+    start = MPI_Wtime();
+    block_mat_mult(A, B, C, n_local);
+    end = MPI_Wtime();
+    dt = end - start;
+    proc_time += dt;
+
+
+  //printf("rank:%d up:%d down:%d left:%d right%d\n", local_rank, up_rank, down_rank, left_rank, right_rank);
+  }
+
+  
+  //for( i = 0; i < num_procs; ++i ) {
+  //  MPI_Barrier( *comm_new );
+  //  if ( i == local_rank ) {
+  //    printf("A:%d:\n", local_rank);
+      //printMatrix(A, n_local);
+      //printMatrix(B, n_local);
+  //    printMatrix(C, n_local);
+  //  }
+  //}
+
+  return C;
+}
+
 void process_row_and_column(float *A, float *left_row, float *top_row, int k,
                             int startingRow, int endingRow, int startingColumn, int endingColumn, 
                             int numRows, int numColumns, int local_k) {
@@ -676,3 +1004,26 @@ void receive_from_left(MPI_Comm *comm, int direction, float *A, int size, int ro
     MPI_Cart_shift(*comm, 0, ++distance, &prev_rank, &next_rank);
   }
 }
+
+void add(float *A, float *B, float *C, int _n) {  
+  int i, j;
+  
+  for (i = 0; i < _n; ++i) {
+    for (j = 0; j < _n; ++j) {
+      C[i * _n + j] = A[i * _n + j] + B[i * _n + j];
+    }
+  }
+
+}
+
+void sub(float *A, float *B, float *C, int _n) {  
+  int i, j;
+  
+  for (i = 0; i < _n; ++i) {
+    for (j = 0; j < _n; ++j) {
+      C[i * _n + j] = A[i * _n + j] - B[i * _n + j];
+    }
+  }
+
+}
+
