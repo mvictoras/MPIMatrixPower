@@ -44,6 +44,10 @@ char s_local_coords[255];
 int computerStats = 0;
 int *counts;
 int *displs;
+int assoc = 0;
+int input_numbers[4];
+int input_method2 = 0;
+
 MPI_Datatype resizedtype;
 MPI_Comm comm_hor, comm_vert, comm_vert_col, comm_hor_row, comm_hor_col;
 
@@ -68,11 +72,9 @@ float *generate_serial(MPI_Comm *comm_new, int local_rank, int num_procs, char *
 float *generate_parallel(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node);
 void distribute_hypercube(MPI_Comm *comm_new, int local_rank, int num_procs, char *proc_name, int *elem_per_node, float *A, float *B);
 
-void serial_deter();
-
 void determinant(float *A, int _n);
-void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
-void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
+//void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
+//void two_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs);
 
 float *do_cannon(MPI_Comm *comm_new, float *A, float *B, int local_rank, int num_procs);
 void do_strassen(float *A, float *B, float *C, int _n); 
@@ -87,11 +89,11 @@ void matrix_power(float *A, float *C, int _n, int _k);
 void matrix_mult_serial(float *A, float *B, float *C, int n);
 void block_mat_mult(float *A, float *B, float *C, int q);
 
-void process_row_and_column(float *A, float *left_row, float *top_row, int startingRow, int k, int endingRow, int startingColumn, int endingColumn, int numRows, int numColumns, int local_k);
+//void process_row_and_column(float *A, float *left_row, float *top_row, int startingRow, int k, int endingRow, int startingColumn, int endingColumn, int numRows, int numColumns, int local_k);
 
 void printMatrix(float *A, int nElem);
-void send_to(MPI_Comm *comm, int direction, float *A, int size, int row, int column, int n);
-void receive_from_left(MPI_Comm *comm, int direction, float *A, int size, int row, int column, int n, int k);
+//void send_to(MPI_Comm *comm, int direction, float *A, int size, int row, int column, int n);
+//void receive_from_left(MPI_Comm *comm, int direction, float *A, int size, int row, int column, int n, int k);
 
 int main(int argc, char **argv) {
 	double t_start, t_end;
@@ -132,8 +134,6 @@ int main(int argc, char **argv) {
     proc_time += dt;
 
 
-    //printf("======\n");
-    //printMatrix(C, n);
     start = MPI_Wtime();
     determinant(C, n);
     end = MPI_Wtime();
@@ -149,14 +149,32 @@ int main(int argc, char **argv) {
     result = (float *)malloc(sizeof(float) * n * n);
     memcpy(B, local_array, sizeof(float) * n_local * n_local);
     
-    for( i = 0; i < k - 1; ++i) {
+    int k_end = (assoc) ? k / 2 : k;
+    
+    for( i = 2; i <= k_end; ++i) {
       C = do_cannon(&comm_new, local_array, B, local_rank, num_procs);
       memcpy(local_array, C, sizeof(float) * n_local * n_local);
     }
 
+    if( assoc ) {
+      float *Bcopy = (float *) malloc(sizeof(float) * n_local * n_local);
+      memcpy(Bcopy, B, sizeof(float) * n_local * n_local);
+      
+      memcpy(B, local_array, sizeof(float) * n_local * n_local);
+      C = do_cannon(&comm_new, local_array, B, local_rank, num_procs);
+      
+      if( k % 2 != 0 ) {
+        memcpy(local_array, C, sizeof(float) * n_local * n_local);
+        memcpy(B, Bcopy, sizeof(float) * n_local * n_local);
+        C = do_cannon(&comm_new, local_array, B, local_rank, num_procs);
+      }
+      free(Bcopy);
+    }
+ 
     MPI_Gatherv(C, n_local * n_local, MPI_FLOAT, result, counts, displs, resizedtype, 0, comm_new); 
-   
+  
     if( local_rank == 0 ) {
+      printMatrix(result, n);
       determinant(result, n);
     }
     free(C);
@@ -171,10 +189,28 @@ int main(int argc, char **argv) {
     B = (float*)malloc(sizeof(float) * n * n);
     memcpy(B, local_array, sizeof(float) * n * n);
 
-    for( i = 0; i < k - 1; ++i ) {
+    int k_end = (assoc) ? k / 2 : k;
+ 
+    for( i = 2; i <= k_end; ++i ) {
       do_strassen(local_array, B, C, n);
       memcpy(local_array, C, sizeof(float) * n * n);
     }
+   
+    if( assoc ) {
+      float *Bcopy = (float *) malloc(sizeof(float) * n * n);
+      memcpy(Bcopy, B, sizeof(float) * n * n);
+      
+      memcpy(B, local_array, sizeof(float) * n * n);
+      do_strassen(local_array, B, C, n);
+      
+      if( k % 2 != 0 ) {
+        memcpy(local_array, C, sizeof(float) * n * n);
+        memcpy(B, Bcopy, sizeof(float) * n * n);
+        do_strassen(local_array, B, C, n);
+      }
+      free(Bcopy);
+    }
+    
 
     //printMatrix(B, n);
     //printMatrix(C, n);
@@ -204,12 +240,38 @@ int main(int argc, char **argv) {
     MPI_Bcast(B, n_local * n_local, MPI_FLOAT, 0, comm_vert_col);
     MPI_Bcast(B, n_local * n_local, MPI_FLOAT, local_coords[2], comm_hor_col);
 
-    for( i = 0; i < k - 1; ++i) {
+    int k_end = (assoc) ? k / 2 : k;
+    
+    for( i = 2; i <= k_end; ++i) {
       // Align A
       MPI_Bcast(A, n_local * n_local, MPI_FLOAT, 0, comm_vert_col);
       MPI_Bcast(A, n_local * n_local, MPI_FLOAT, local_coords[2], comm_hor_row);
       do_dns(&comm_new, A, B, C, local_rank, num_procs);
       memcpy(A, C, sizeof(float) * n_local * n_local);
+    }
+
+    if( assoc ) {
+      float *Bcopy = (float *) malloc(sizeof(float) * n_local * n_local);
+      memcpy(Bcopy, B, sizeof(float) * n_local * n_local);
+      
+      memcpy(B, A, sizeof(float) * n_local * n_local);
+      // Align B 
+      MPI_Bcast(B, n_local * n_local, MPI_FLOAT, 0, comm_vert_col);
+      MPI_Bcast(B, n_local * n_local, MPI_FLOAT, local_coords[2], comm_hor_col);
+      
+      // Align A
+      MPI_Bcast(A, n_local * n_local, MPI_FLOAT, 0, comm_vert_col);
+      MPI_Bcast(A, n_local * n_local, MPI_FLOAT, local_coords[2], comm_hor_row);
+      do_dns(&comm_new, A, B, C, local_rank, num_procs);
+      if( k % 2 != 0 ) {
+        memcpy(A, C, sizeof(float) * n_local * n_local);
+        memcpy(B, Bcopy, sizeof(float) * n_local * n_local);
+
+        MPI_Bcast(A, n_local * n_local, MPI_FLOAT, 0, comm_vert_col);
+        MPI_Bcast(A, n_local * n_local, MPI_FLOAT, local_coords[2], comm_hor_row);
+        do_dns(&comm_new, A, B, C, local_rank, num_procs);
+      }
+      free(Bcopy);
     }
     
     MPI_Gatherv(C, n_local * n_local, MPI_FLOAT, result, counts, displs, resizedtype, 0, comm_hor); 
@@ -220,6 +282,8 @@ int main(int argc, char **argv) {
         printMatrix(result, n);
       }
     }
+
+    determinant(result, n);
 
     free(A);
     free(B);
@@ -259,7 +323,7 @@ int main(int argc, char **argv) {
 }
 
 int parse_arguments(int argc, char **argv) {
-	int c;
+	int i, c;
   int option_index = 0;
   static struct option long_options[] =
   {
@@ -270,16 +334,22 @@ int parse_arguments(int argc, char **argv) {
 
   char *result = NULL;
   char delims[] = "m";
-	while( (c = getopt_long (argc, argv, "n:t:q:w:k:c", long_options, &option_index)) != -1 ) {
+	while( (c = getopt_long (argc, argv, "n:t:q:w:k:ca", long_options, &option_index)) != -1 ) {
 		switch(c) {
       case 'q':
-        //printf("optarg:%s\n", optarg);
         result = strtok(optarg, delims);
         one_prob = atof(result);
         result = strtok(NULL, delims);
         minus_one_prob = atof(result);
         break;
       case 'w':
+        input_method2 = 1;
+        result = strtok(optarg, delims);
+        input_numbers[0] = atoi(result);
+        for( i = 1; i < 4; i++ ) {
+          result = strtok(NULL, delims);
+          input_numbers[i] = atoi(result);
+        }
         break;
 			case 'n':
 				n = atoi(optarg);
@@ -289,6 +359,9 @@ int parse_arguments(int argc, char **argv) {
         break;
       case 'c':
         computerStats = 1;
+        break;
+      case 'a':
+        assoc = 1;
         break;
       case 't':
         if( strcmp(optarg, "serial" ) == 0 ) type = serial;
@@ -423,16 +496,19 @@ float *generate_array(int num_procs, char *proc_name, int local_rank,
   float a = 0;
   int c = 0;
   int d = 0;
-  int k = 0;
-	for( i = 0; i < n; i++ ) {
+  int input_i = 0;
+	
+  for( i = 0; i < n; i++ ) {
     for( j = 0; j < n; j++ ) {
-      double number = (double)rand() / RAND_MAX;
-      //printf("%f\n", number);
-      if( number <= one_prob ) { a = 1; c++; }
-      else if( number - one_prob <= minus_one_prob ) { a = -1; d++; }
-      else a = 0;
-      a = k;
-      k++;
+      if( !input_method2 ) {
+        double number = (double)rand() / RAND_MAX;
+        if( number <= one_prob ) { a = 1; c++; }
+        else if( number - one_prob <= minus_one_prob ) { a = -1; d++; }
+        else a = 0;
+      } else {
+        a = input_numbers[input_i];
+        input_i = (input_i == 3) ? 0 : input_i + 1; 
+      }
 		  gen_array[i * n + j] = a;
     }
   }
@@ -585,16 +661,33 @@ void dns_align(float *A, float *B) {
 
 void matrix_power(float *A, float *C, int _n, int _k) {
   int i;
-  float *tmp_res;
-  tmp_res = (float*)malloc(sizeof(float) * _n * _n);
-  memcpy(C, A, sizeof(float) * _n * _n);
+  float *B;
+  B = (float*)malloc(sizeof(float) * _n * _n);
+  memcpy(B, A, sizeof(float) * _n * _n);
 
-  for( i = 0; i < _k - 1; i++ ) {
-    matrix_mult_serial(C, A, tmp_res, _n);
-    memcpy(C, tmp_res, sizeof(float) * _n * _n);
+  int k_end = (assoc) ? _k / 2 : _k;
+  for( i = 2; i <= k_end; ++i ) {
+    matrix_mult_serial(A, B, C, _n);
+    memcpy(A, C, sizeof(float) * _n * _n);
+  }
+  
+  if( assoc ) {
+    float *Bcopy = (float *) malloc(sizeof(float) * _n * _n);
+    memcpy(Bcopy, B, sizeof(float) * _n * _n);
+      
+    memcpy(B, A, sizeof(float) * _n * _n);
+    matrix_mult_serial(A, B, C, _n);
+      
+    if( k % 2 != 0 ) {
+      memcpy(A, C, sizeof(float) * _n * _n);
+      memcpy(B, Bcopy, sizeof(float) * _n * _n);
+      matrix_mult_serial(A, B, C, _n);
+    }
+    free(Bcopy);
   }
 
-  free(tmp_res);
+  printMatrix(C, _n);
+  free(B);
 }
 
 void matrix_mult_serial(float *A, float *B, float *C, int _n) {
@@ -640,7 +733,7 @@ void determinant(float *A, int _n) {
   //printf("\nDet is: %Lf\n", determinant);
 }
 
-
+/*
 void one_d_partitioning(MPI_Comm *comm_new, float *A, int local_rank, int num_procs) {
   MPI_Status status;
   int k, i, j, startingRow, endingRow, numRows;
@@ -884,7 +977,7 @@ printf("%d: ASDAASD\n", local_rank);
     printf("Determinant is %f\n", result[0]);
   }
 }
-
+*/
 void do_strassen(float *A, float *B, float *C, int _n) {
   int i, j;
 
